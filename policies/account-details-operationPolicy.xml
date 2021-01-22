@@ -1,0 +1,85 @@
+<!--
+    IMPORTANT:
+    - Policy elements can appear only within the <inbound>, <outbound>, <backend> section elements.
+    - To apply a policy to the incoming request (before it is forwarded to the backend service), place a corresponding policy element within the <inbound> section element.
+    - To apply a policy to the outgoing response (before it is sent back to the caller), place a corresponding policy element within the <outbound> section element.
+    - To add a policy, place the cursor at the desired insertion point and select a policy from the sidebar.
+    - To remove a policy, delete the corresponding policy statement from the policy document.
+    - Position the <base> element within a section element to inherit all policies from the corresponding section element in the enclosing scope.
+    - Remove the <base> element to prevent inheriting policies from the corresponding section element in the enclosing scope.
+    - Policies are applied in the order of their appearance, from the top down.
+    - Comments within policy elements are not supported and may disappear. Place your comments between policy elements or at a higher level scope.
+-->
+<policies>
+	<inbound>
+		<base />
+		<set-method>POST</set-method>
+		<!-- <validate-jwt header-name="Authorization" failed-validation-httpcode="401" failed-validation-error-message="Access Token Missing or Expired Token or Invalid Token" require-expiration-time="false" require-scheme="Bearer" require-signed-tokens="false" output-token-variable-name="Token">
+            <openid-config url="https://cmsenergy.oktapreview.com/oauth2/ausvszu7tg9E2P7vI0h7/.well-known/openid-configuration?client_id=0oaplmc663ecHDVGu0h7" />
+        </validate-jwt>-->
+		<send-request ignore-error="false" timeout="20" response-variable-name="poPassword" mode="new">
+			<set-url>https://ce-nonprod-apim-vault.vault.azure.net/secrets/xidev2pohttprkwh/e46c7c023f8a4fce82655807804ec156/?api-version=7.0</set-url>
+			<set-method>GET</set-method>
+			<authentication-managed-identity resource="https://vault.azure.net" />
+		</send-request>
+		<set-variable name="BPNbr" value="@(context.Request.Headers["Authorization"].First().Split(' ')[1].AsJwt()?.Claims["bpn"].FirstOrDefault())" />
+		<set-variable name="ContractAccountNumber" value="@(context.Request.MatchedParameters["accountId"])" />
+		<set-header name="Content-Type" exists-action="override">
+			<value>application/json</value>
+		</set-header>
+		<set-body template="liquid">{"OnlineProfileId": {{context.variables["BPNbr"]}} , "ContractAccountNumber": {{context.variables["ContractAccountNumber"]}}, "CompanyId":0}</set-body>
+		<rewrite-uri template="/" copy-unmatched-params="true" />
+		<set-backend-service base-url="https://xidev2.consumersenergy.com:8443/RESTAdapter/MobileContractAccount/GetAccountDetails" />
+		<authentication-basic username="PO_HTTP_RKWH" password="@{ var secret = ((IResponse)context.Variables["poPassword"]).Body.As<JObject>(); return secret["value"].ToString(); }" />
+		<authentication-certificate thumbprint="C9C2A2419CA0DD70F8EAFAFDE03EB55444BD9929" />
+	</inbound>
+	<backend>
+		<base />
+	</backend>
+	<outbound>
+		<base />
+		<set-variable name="ResponseMessage" value="@(context.Response.Body.As<String>())" />
+		<choose>
+			<when condition="@((int)context.Response.StatusCode == 200)">
+				<return-response response-variable-name="existing response variable">
+					<set-status code="200" reason="Ok" />
+					<set-header name="Content-Type" exists-action="override">
+						<value>application/json</value>
+					</set-header>
+					<set-body template="liquid">{{context.variables["ResponseMessage"]}}</set-body>
+				</return-response>
+			</when>
+		</choose>
+		<choose>
+			<when condition="@((int)context.Response.StatusCode > 200)">
+				<return-response response-variable-name="existing response variable">
+					<set-status code="400" reason="Ok" />
+					<set-header name="Content-Type" exists-action="override">
+						<value>application/json</value>
+					</set-header>
+					<set-body template="liquid">Failed Response from SAP Backend Service</set-body>
+				</return-response>
+			</when>
+		</choose>
+	</outbound>
+	<on-error>
+		<base />
+		<set-body>@{
+        return new JObject(
+        new JProperty("ErrorStatusCode", context.Response.StatusCode.ToString()),
+        new JProperty("ErrorReason", context.LastError.Reason),
+        new JProperty("ErrorPath", context.LastError.Path),
+        new JProperty("ServerName", context.Deployment.ServiceName),
+        new JProperty("ErrorPolicyId", context.LastError.PolicyId),
+        new JProperty("Msgs",
+        new JArray(
+        new JObject(
+        new JProperty("Msg", context.LastError.Message),
+        new JProperty("Th", "main"),
+        new JProperty("EpochMs", (new DateTimeOffset(DateTime.Now)).ToUnixTimeSeconds() * 1000 ),
+        new JProperty("SrcMethod", context.LastError.Source)
+        )))
+        ).ToString();
+        }</set-body>
+	</on-error>
+</policies>
